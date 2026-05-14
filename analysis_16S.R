@@ -18,13 +18,14 @@ library(DESeq2)
 
 # Set seed
 set.seed(666)
-setwd("C:/Users/VaughanA/OneDrive - MWLR/Projects/microbial_hitchikers/R-analysis-mar2025")
+setwd("C:/Users/ava135/OneDrive - University of Canterbury/Projects/Passenger_risk_incursions/r-data-analysis/16S")
 
 asv_mat <- read_tsv("ASVs_counts_16S.tsv")
 tax_mat <- read.csv("merged_tax.csv", header = TRUE)
 samples_df <- read_excel("metadata.xlsx")
 
 colnames(asv_mat)[1] <- "ASV"
+colnames(tax_mat)[1] <- "ASV"
 
 # Set rownames
 asv_mat <- asv_mat %>% column_to_rownames("ASV")
@@ -105,8 +106,10 @@ contaminants <- rownames(contamdf)[contamdf$contaminant == TRUE]
 ps_clean <- prune_taxa(!taxa_names(ps) %in% contaminants, ps)
 ps_clean #6929 taxa; 65 samples
 
-#remove taxa with 0 reads 
+#remove taxa with 0 reads  and samples with <500 reads
 ps_nozero <- prune_taxa(taxa_sums(ps_clean) > 0, ps_clean)
+ps_filtered <- prune_samples(sample_sums(ps_nozero) >= 500, ps_nozero)
+ps <- ps_filtered
 ps <- ps_nozero
 ps #6929
 
