@@ -15,38 +15,57 @@ library(dplyr)
 library(ggplot2)
 library(vegan)
 library(DESeq2)
+library(decontam)
+library(MicrobiomeStat)
+library(microbiome)
+library(microViz)
+library(ggplot2)
+library(patchwork)
+library(RColorBrewer)
+
 
 # Set seed
 set.seed(666)
-setwd("C:/Users/ava135/OneDrive - University of Canterbury/Projects/Passenger_risk_incursions/r-data-analysis/16S")
+setwd("C:/Users/VaughanA/OneDrive - MWLR/Projects/microbial_hitchikers/R-analysis-mar2025/16S")
 
 asv_mat <- read_tsv("ASVs_counts_16S.tsv")
-tax_mat <- read.csv("merged_tax.csv", header = TRUE)
+tax_mat_16S <- read.csv("merged_tax.csv", header = TRUE)
 samples_df <- read_excel("metadata.xlsx")
 
 colnames(asv_mat)[1] <- "ASV"
-colnames(tax_mat)[1] <- "ASV"
+colnames(tax_mat_16S)[1] <- "ASV"
 
 # Set rownames
 asv_mat <- asv_mat %>% column_to_rownames("ASV")
-tax_mat <- tax_mat %>% column_to_rownames("ASV")
-samples_df <- samples_df %>% column_to_rownames("sample")
+tax_mat_16S <- tax_mat_16S %>% column_to_rownames("ASV")
+samples_df <- samples_df %>% column_to_rownames("seq_name")
 
 # Convert to matrices
 asv_mat <- as.matrix(asv_mat)
-tax_mat <- as.matrix(tax_mat)
+tax_mat_16S <- as.matrix(tax_mat_16S)
+
+##check all samples are there and accounted for for sanity
+asv_samples <- colnames(asv_mat)
+meta_samples <- rownames(samples_df)
+identical(asv_samples, meta_samples)
+
+# In ASV matrix but not metadata
+setdiff(asv_samples, meta_samples) ## 0
+# In metadata but not ASV matrix
+setdiff(meta_samples, asv_samples) ## 11 samples, those are the ones which have 0 reads
 
 # Build phyloseq
 ps <- phyloseq(
   otu_table(asv_mat, taxa_are_rows = TRUE),
-  tax_table(tax_mat),
+  tax_table(tax_mat_16S),
   sample_data(samples_df)
 )
 
 ps   # 7197 taxa, 65 samples
 
-######## filtering data step #################################################################################
-##############################################################################################################
+#############################################################
+######## filtering data step ################################
+#############################################################
 
 ##remove uncgaracterised taxa
 table(tax_table(ps)[, "Phylum"], exclude = NULL)
@@ -54,26 +73,28 @@ ps0 <- subset_taxa(ps, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
 ps0 #7012 taxa and 65 samples
 ps0 <- ps 
 
+##filter human contaminiation
+ps_nohomo <- subset_taxa(ps, Family != "Hominidae")
+ps_nohomo #5735, 65 samples
+
 #Remove plant contaminations
-ps_clean <- subset_taxa(ps, Phylum != "Streptophyta")
-ps_clean #7012 taxa; 65 samples 
+ps_clean <- subset_taxa(ps_nohomo, Phylum != "Streptophyta")
+ps_clean #5735 taxa; 65 samples 
 
 #Remove archaea contaminations
 ps_clean <- subset_taxa(ps_clean, Phylum != "Methanobacteriota")
-ps_clean #7007
+ps_clean #5730; 65 samples
 ps <- ps_clean
 
-######## decontam #################################################################################
-##############################################################################################################
+#############################################################
+################### DECONTAM ################################
+#############################################################
 
 sample_names(ps) ##check to make sure the samples are all correct
-lookup <- samples_df$`sample-name`
+lookup <- samples_df$`sample_name`
 names(lookup) <- rownames(samples_df)
 sample_names(ps) <- lookup[sample_names(ps)] ##fixed the sample names so they line up to the proper samples and blanks
 sample_names(ps) ##chek
-
-
-library(decontam)
 
 sample_data(ps)$is.neg <- sample_names(ps) %in% c(
   "AS_T0_16S",
@@ -100,22 +121,20 @@ sample_data(ps)$is.neg <- sample_names(ps) %in% c(
 )
                                                  
 contamdf <- isContaminant(ps, method="prevalence", neg="is.neg")
-table(contamdf$contaminant) #false = 6929; true = 78
+table(contamdf$contaminant) #false = 5658; true = 72
 contaminants <- rownames(contamdf)[contamdf$contaminant == TRUE]
 
 ps_clean <- prune_taxa(!taxa_names(ps) %in% contaminants, ps)
-ps_clean #6929 taxa; 65 samples
+ps_clean #5658 taxa; 65 samples
 
-#remove taxa with 0 reads  and samples with <500 reads
-ps_nozero <- prune_taxa(taxa_sums(ps_clean) > 0, ps_clean)
-ps_filtered <- prune_samples(sample_sums(ps_nozero) >= 500, ps_nozero)
-ps <- ps_filtered
-ps <- ps_nozero
-ps #6929
+#remove taxa with 0 reads 
+#ps_nozero <- prune_taxa(taxa_sums(ps_clean) > 0, ps_clean)
+#ps <- ps_nozero
+#ps #6929
 
-
-######## remove controls #################################################################################
-##############################################################################################################
+#############################################################
+################### Remove controls #########################
+#############################################################
 
 neg_samples <- c(
   "AS_T0_16S",
@@ -143,149 +162,40 @@ neg_samples <- c(
 
 ps_final <- subset_samples(ps, !sample_names(ps) %in% neg_samples)
 
-ps_final #6929 taxa; 53 samples
+ps_final #5730 taxa; 53 samples
 sample_names(ps_final)
+ps_final_16S <- ps_final
+##remove samplesps_final_16S##remove samples that have extremly low reads
+ps_final_16S <- prune_samples(sample_sums(ps_final_16S) > 100, ps_final)
+sample_sums(ps_final_16S)
+ps_final_16S #5730; 38 samples
+sample_sums(ps_final_16S)
 
-######## normalise data #################################################################################
-##############################################################################################################
+#############################################################
+################### Normalize data ##########################
+#############################################################
 
-library(MicrobiomeStat)
+##check format of phyloseq object is correct
+phyloseq::taxa_are_rows(ps_final_16S)
 
-otu_mat <- as(otu_table(ps_final), "matrix")
-samples_df <- as(sample_data(ps_final), "data.frame")
-tax_mat <- as(tax_table(ps_final), "matrix")
-otu_rel <- sweep(otu_mat, 2, colSums(otu_mat), FUN = "/")
+data.obj.16S <- mStat_convert_phyloseq_to_data_obj(ps_final_16S)
+norm.data.obj <- mStat_normalize_data(data.obj.16S, "TSS")$data.obj.norm
+mStat_validate_data(norm.data.obj) ##validation pass
+
+mStat_rarefy_data(data.obj=ps_final, depth = 500)
+
 
 ####################################################################################################
 ##################################DAT ANALYSIS SECTION##############################################
 ####################################################################################################
 
-##used this for top 20 and top 15
-top20 <- names(sort(taxa_sums(ps_final), decreasing=TRUE))[1:20]
-ps.top20 <- transform_sample_counts(ps_final, function(OTU) OTU/sum(OTU))
-ps.top20 <- prune_taxa(top20, ps.top20)
-plot_bar(ps.top20, x="sample.name", fill="Genus") + facet_wrap(~type, scales="free_x")
+
+##see additional R script for full scripts
 
 
-plot_bar(ps.top20, x = "sample.name", fill = "Genus") +
-  facet_wrap(~type, scales = "free_x") +  # one panel per type
-  theme_classic() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = "Tent Number / Sample", y = "Relative Abundance", fill = "Genus")
-
-##because top 20 are mutiple in same genus i plotted by Asv also
-
-plot_bar(ps.top20, x = "sample.name", fill = "OTU") +  # or fill = "taxa_names"
-  facet_wrap(~type, scales = "free_x") +
-  theme_classic() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = "Tent Number / Sample", y = "Relative Abundance", fill = "ASV")
-
-#######sample stats and reads##############################################################
-#######################################################################################
-
-# Extract sample sums
-sample_stats <- data.frame(
-  sample = sample_names(ps_final),
-  total_reads = sample_sums(ps_final)
-)
-
-# Add metadata
-metadata <- data.frame(sample_data(ps_final))
-metadata <- tibble::rownames_to_column(data.frame(sample_data(ps_final)), var = "sample")
-sample_stats <- left_join(sample_stats, metadata, by = "sample")
-
-# View the table
-head(sample_stats)
-write.csv(sample_stats, file = "sample_stats.csv", row.names = FALSE)
 
 
-#######bray curtis ordination##############################################################
-#######################################################################################
-
-ps.clean <- prune_samples(sample_sums(ps_final) > 0, ps_final)
-ps.rel <- transform_sample_counts(ps.clean, function(x) x / sum(x))
-taxa_sums(ps.rel)
-ps.rel <- prune_taxa(taxa_sums(ps.rel) > 0, ps.rel)
-
-ord <- ordinate(ps.rel, method="PCoA", distance="bray")
-library(ggrepel)
-
-p <- plot_ordination(ps.rel, ord, color = "location...2", shape = "location...7") +
-  geom_point(size = 4) +
-  geom_text(aes(label = sample.name), vjust = -1, size = 3) +
-  theme_classic()
-p
 
 
-#######alpha diversity##############################################################
-#######################################################################################
-# Remove zero-read samples
-ps.clean <- prune_samples(sample_sums(ps_final) > 0, ps_final)
-sample_sums(ps.clean)
 
-# Find minimum sample depth
-min_reads <- min(sample_sums(ps.clean))
 
-# Rarefy to that depth
-ps.rarefy <- prune_samples(sample_sums(ps.clean) >= 1000, ps.clean)
-
-min_reads <- min(sample_sums(ps.rarefy))  # now > 1000
-set.seed(123)
-ps.rarefied <- rarefy_even_depth(ps.rarefy,
-                                 sample.size = min_reads,
-                                 rngseed = 123,
-                                 verbose = FALSE)
-
-# Calculate alpha diversity
-alpha_div <- estimate_richness(ps.rarefied,
-                               measures = c("Observed", "Shannon", "Simpson"))
-
-# Add sample names as a column
-alpha_div$sample <- rownames(alpha_div)
-# Remove X from alpha_div sample names
-alpha_div$sample <- sub("^X", "", alpha_div$sample)
-
-# Then merge
-alpha_div <- merge(alpha_div, meta_df,
-                   by.x = "sample", by.y = "sample.name",
-                   all.x = TRUE)
-
-# Check
-head(alpha_div[, c("sample", "Shannon", "type", "is.neg", "tent.number")])
-# Extract metadata and merge correctly
-meta_df <- data.frame(sample_data(ps.rarefied))
-alpha_div <- merge(alpha_div, meta_df,
-                   by.x = "sample", by.y = "sample.name",
-                   all.x = TRUE)
-
-# Check
-head(alpha_div)
-# Remove rows with NA in location...7.x
-alpha_div_plot <- alpha_div %>% filter(!is.na(location...7.x))
-
-##nz versus overseas
-ggplot(alpha_div, aes(x = location...7.x, y = Shannon, fill = location...7.x)) +
-  geom_boxplot(alpha = 0.7) +
-  geom_jitter(width = 0.2, size = 2) +
-  theme_classic() +
-  labs(x = "Overseas", y = "Shannon Diversity")
-
-##nz versus overseasonly from tent
-# Filter for tent samples only
-alpha_div_tent <- alpha_div %>% 
-  filter(type.x == "tent" & !is.na(location...7.x))  # also remove NAs in location
-
-# Plot NZ vs Overseas for tent samples
-ggplot(alpha_div_tent, aes(x = location...7.x, y = Shannon, fill = location...7.x)) +
-  geom_boxplot(alpha = 0.7) +
-  geom_jitter(width = 0.2, size = 2) +
-  theme_classic() +
-  labs(x = "Overseas", y = "Shannon Diversity")
-
-##by sample type
-ggplot(alpha_div, aes(x = type.x, y = Shannon, fill = type.x)) +
-  geom_boxplot(alpha = 0.7) +
-  geom_jitter(width = 0.2, size = 2) +
-  theme_classic() +
-  labs(x = "Sample Type", y = "Shannon Diversity")
